@@ -80,11 +80,12 @@ function buildProposalList(approvals, votes) {
   for (const a of (Array.isArray(approvals) ? approvals : [])) {
     if (a.type !== 'approve_ceo_strategy') continue;
     const plan = (a.payload && a.payload.plan) || '';
-    // Split on both # headings and ## PITCH N: headings
-    const pitchSplitRe = /(?=^#{1,2}\s+(?:PITCH\s+\d+|Shark Tank Pitch)[:\s—-])/im;
+    // Split on # / ## headings that mark a pitch. Accepts:
+    //   "# PITCH 2:", "# Pitch 2 —", "# Pitch #2 — Foo", "# 🦈 Shark Tank Pitch:"
+    const pitchSplitRe = /(?=^#{1,2}\s+(?:[\u{1F988}\s]*)?(?:Pitch\s*#?\s*\d+|Shark Tank Pitch)[:\s\u2014\-])/imu;
     const pitchBlocks = plan.split(pitchSplitRe).map(s => s.trim()).filter(s => {
       const first = s.split('\n')[0];
-      return /Shark Tank Pitch|PITCH\s+\d+/i.test(first);
+      return /Shark Tank Pitch|Pitch\s*#?\s*\d+/i.test(first);
     });
 
     if (pitchBlocks.length <= 1) {
@@ -96,7 +97,7 @@ function buildProposalList(approvals, votes) {
       for (let i = 0; i < pitchBlocks.length; i++) {
         const block = pitchBlocks[i].trim();
         const firstLine = block.split('\n')[0];
-        const titleMatch = firstLine.match(/(?:Shark Tank Pitch:|PITCH\s+\d+\s*[:\u2014\-]+\s*)(.+)$/i);
+        const titleMatch = firstLine.match(/(?:Shark Tank Pitch:|Pitch\s*#?\s*\d+\s*[:\u2014\-]+\s*)(.+)$/i);
         const title = titleMatch ? titleMatch[1].trim() : 'Pitch ' + (i + 1);
         const syntheticId = a.id + '__pitch' + i;
         const vData = votes[syntheticId] || { votes: [], comments: [] };
@@ -238,6 +239,13 @@ main{max-width:900px;margin:0 auto;padding:44px 24px 100px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .toast{position:fixed;bottom:24px;right:24px;background:#141414;border:1px solid #222;border-radius:8px;padding:12px 18px;font-size:13px;color:#aaa;z-index:999;opacity:0;transform:translateY(4px);transition:all .25s}
 .toast.on{opacity:1;transform:translateY(0)}
+.status-filter{display:flex;gap:8px;padding:14px 32px;border-bottom:1px solid #141414;background:#080808;flex-wrap:wrap}
+.sfilter{padding:6px 14px;background:#131313;border:1px solid #1e1e1e;border-radius:20px;color:#444;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;transition:all .15s}
+.sfilter:hover{color:#aaa;border-color:#2a2a2a}
+.sfilter.active{background:#1a1a1a;color:#ddd;border-color:#333}
+.sfilter.pending.active{background:#181200;color:#d4900a;border-color:#2a1f00}
+.sfilter.approved.active{background:#0a180a;color:#3dba6e;border-color:#0f2e0f}
+.sfilter.rejected.active{background:#180a0a;color:#c0524a;border-color:#2e0f0f}
 </style></head>
 <body>
 <div class="topbar">
@@ -253,6 +261,12 @@ main{max-width:900px;margin:0 auto;padding:44px 24px 100px}
 <div class="tabs">
   <div class="tab active" data-tab="daily" onclick="switchTab('daily')">Daily Ideas</div>
   <div class="tab" data-tab="all" onclick="switchTab('all')">All Proposals</div>
+</div>
+<div class="status-filter">
+  <button class="sfilter active" data-status="" onclick="setStatus('')">All</button>
+  <button class="sfilter pending" data-status="pending" onclick="setStatus('pending')">Pending</button>
+  <button class="sfilter approved" data-status="approved" onclick="setStatus('approved')">Approved</button>
+  <button class="sfilter rejected" data-status="rejected" onclick="setStatus('rejected')">Rejected</button>
 </div>
 <main>
   <div id="section-daily">
@@ -287,7 +301,16 @@ function changeUser(u) {
 }
 let currentDate = '${today}';
 let activeTab = 'daily';
+let activeStatus = '';
 let availableDates = [];
+
+function setStatus(s) {
+  activeStatus = s;
+  document.querySelectorAll('.sfilter').forEach(el => {
+    el.classList.toggle('active', el.dataset.status === s);
+  });
+  activeTab === 'daily' ? renderDaily() : renderAll();
+}
 
 function switchTab(tab) {
   activeTab = tab;
@@ -446,7 +469,7 @@ async function renderDaily() {
   const todayStr = new Date().toISOString().slice(0, 10);
   const isToday = currentDate === todayStr;
   try {
-    const data = await api('/proposals/by-date?date=' + currentDate);
+    const data = await api('/proposals/by-date?date=' + currentDate + (activeStatus ? '&status=' + activeStatus : ''));
     document.getElementById('cal-count').textContent = Array.isArray(data) && data.length ? data.length + ' idea' + (data.length !== 1 ? 's' : '') + ' this day' : 'No ideas this day';
     if (!Array.isArray(data) || !data.length) {
       el.innerHTML = '<div class="empty"><h2>No ideas for this day</h2><p>The Researcher generates 5 B2B ideas every day at 8 AM.</p></div>';
@@ -462,7 +485,7 @@ async function renderAll() {
   const el = document.getElementById('all-app');
   el.innerHTML = '<div class="empty"><div class="spin"></div></div>';
   try {
-    const data = await api('/proposals');
+    const data = await api('/proposals' + (activeStatus ? '?status=' + activeStatus : ''));
     if (!Array.isArray(data) || !data.length) {
       el.innerHTML = '<div class="empty"><h2>No proposals yet</h2><p>The CEO has not submitted any pitches yet.</p></div>';
       return;
@@ -523,9 +546,12 @@ app.get('/', (req, res) => {
 
 app.get('/proposals', async (req, res) => {
   try {
+    const status = req.query.status; // 'approved' | 'pending' | 'rejected' | undefined
     const approvals = await paperclipGet('/companies/' + COMPANY_ID + '/approvals');
     const votes = await loadVotes();
-    res.json(buildProposalList(approvals, votes));
+    let list = buildProposalList(approvals, votes);
+    if (status) list = list.filter(p => p.status === status);
+    res.json(list);
   } catch (e) { res.json([]); }
 });
 
@@ -541,11 +567,14 @@ app.get('/proposals/dates', async (req, res) => {
 app.get('/proposals/by-date', async (req, res) => {
   try {
     const date = req.query.date;
+    const status = req.query.status;
     if (!date) return res.json([]);
     const approvals = await paperclipGet('/companies/' + COMPANY_ID + '/approvals');
     const votes = await loadVotes();
-    const all = buildProposalList(approvals, votes);
-    res.json(all.filter(p => p.createdAt && p.createdAt.slice(0, 10) === date));
+    let all = buildProposalList(approvals, votes);
+    all = all.filter(p => p.createdAt && p.createdAt.slice(0, 10) === date);
+    if (status) all = all.filter(p => p.status === status);
+    res.json(all);
   } catch (e) { res.json([]); }
 });
 
