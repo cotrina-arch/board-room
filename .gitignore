@@ -1,0 +1,11 @@
+node_modules/
+votes.json
+cron.log
+server.log
+*.bak
+*.bak2
+*.bak3
+*.new
+wake_researcher.sh
+.env
+.env.local
